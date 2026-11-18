@@ -1,6 +1,6 @@
 # nft-forward
 
-一个基于 nftables 的 Linux IPv4 端口转发脚本，支持单端口、多端口、端口范围/组合，以及可选的 systemd 开机恢复。
+一个基于 nftables 的 Linux IPv4 端口转发脚本，支持单端口、多端口、端口范围/组合，默认同时做 DNAT 和 SNAT，并自动配置 systemd 开机恢复。
 
 > 脚本只操作自己的表 `ip nftfwd`，不会执行 `flush ruleset`，也不会修改系统里其他 nftables/iptables 表。
 
@@ -14,10 +14,10 @@
 - 端口组合/一一映射（`80,443 -> 8080,8443`）
 - 多条规则指向不同目标（`--rule` 可重复）
 - TCP / UDP / 两者
+- 默认 DNAT + SNAT，可按规则用 `--no-masquerade` 关闭 SNAT
 - 可限制入口网卡
-- 可选 SNAT/masquerade（适合 NAT 回环、目标回程不一致的场景）
 - 规则持久化到 `/etc/nft-forward/rules.conf`
-- 可安装为 `nft-forward.service`，开机自动恢复
+- 添加规则时自动安装并启用 `nft-forward.service`，开机自动恢复
 - 提供 `nft-forward-remote.sh` 远程启动器，可直接从 GitHub 拉取并运行
 
 ## 环境要求
@@ -99,14 +99,14 @@ sudo ./nft-forward.sh menu
 - 预览 nftables 规则
 - 重新应用规则
 - 查看运行状态
-- 安装/更新开机服务
+- 安装/更新开机服务（通常添加规则时已自动完成）
 - 卸载服务
 
 界面示例：
 
 ```text
 ============================================================
-  nft-forward 1.0.0  |  nftables IPv4 端口转发
+  nft-forward 1.1.0  |  nftables IPv4 端口转发
   用户: root    已保存规则: 2
   环境: Linux / root / nft v1.0.9
         nftables 可用 | IPv4转发: 已启用 | systemd: 可用
@@ -121,7 +121,7 @@ sudo ./nft-forward.sh menu
   8) 预览 nftables 规则
   9) 重新应用规则
  10) 查看运行状态
- 11) 安装/更新开机服务
+ 11) 安装/修复开机服务
  12) 卸载服务
   0) 退出
 ------------------------------------------------------------
@@ -207,9 +207,25 @@ sudo ./nft-forward.sh add \
   --proto both
 ```
 
-### 6. 限制入口网卡 + SNAT
+### 6. 限制入口网卡 + 默认 SNAT
 
-只接受从 `eth0` 进入的连接，并对转发流量做 SNAT：
+只接受从 `eth0` 进入的连接。新规则默认已经开启 SNAT，不需要额外加 `--masquerade`：
+
+```bash
+sudo ./nft-forward.sh add \
+  --listen 8080 \
+  --dest 192.168.1.10 \
+  --dest-port 80 \
+  --iface eth0
+```
+
+默认 SNAT 适合：
+
+- 内网设备通过公网 IP 访问同一内网目标（NAT 回环/hairpin）
+- 目标机器的默认网关不是这台转发机，回程不对称
+- 目标机器无法直接路由回客户端
+
+如果目标回程会经过本机，并希望保留客户端真实源 IP：
 
 ```bash
 sudo ./nft-forward.sh add \
@@ -217,15 +233,10 @@ sudo ./nft-forward.sh add \
   --dest 192.168.1.10 \
   --dest-port 80 \
   --iface eth0 \
-  --masquerade
+  --no-masquerade
 ```
 
-适用场景：
-
-- 内网设备通过公网 IP 访问同一内网目标（NAT 回环/hairpin）
-- 目标机器的默认网关不是这台转发机，回程不对称
-
-开启后目标机器看到的源地址会是转发机的出口地址，而不是原始客户端地址。
+`--masquerade` 仍然可用，但现在是默认行为。开启 SNAT 后，目标机器看到的源地址会是转发机的出口地址，而不是原始客户端地址。
 
 ### 7. 只预览，不修改系统
 
@@ -254,26 +265,28 @@ sudo ./nft-forward.sh check         # 详细环境检查
 
 ```text
 ID   PROTO   LISTEN                   TARGET                   IFACE     MASQ
-1    tcp     80,443,8000-8010         192.168.1.10:80          any       no
+1    tcp     80,443,8000-8010         192.168.1.10:80          any       yes
 2    tcp+udp 25565                    192.168.1.30:25565       eth0      yes
 ```
 
 ## 开机自动恢复
 
-规则默认只存在于当前运行时，重启后会消失。安装 systemd 服务：
-
-```bash
-sudo ./nft-forward.sh install
-```
-
-安装后会：
+添加规则成功后，脚本会自动：
 
 - 复制脚本到 `/usr/local/sbin/nft-forward`
 - 生成 `/etc/systemd/system/nft-forward.service`
 - 启用并启动服务
 - 服务启动时读取 `/etc/nft-forward/rules.conf` 并恢复规则
 
-之后新增/删除规则会自动重新应用，配置会保留。
+所以正常情况下不需要手动执行 `install`。
+
+如果 systemd 不可用，或者服务配置失败，规则仍会立即生效，但会提示手动处理：
+
+```bash
+sudo ./nft-forward.sh install
+```
+
+`install` 现在主要用于手动安装/修复开机服务。
 
 查看服务：
 
@@ -315,7 +328,7 @@ table ip nftfwd {
 ```
 
 - `prerouting` 做 DNAT，把监听端口改写到目标地址/端口
-- `postrouting` 做 SNAT；即使没有启用 `--masquerade` 也会保留空链，以兼容 4.18 之前需要双向注册 NAT 链的内核
+- `postrouting` 默认对命中的 DNAT 流量做 SNAT；只有使用 `--no-masquerade` 的规则才不生成 SNAT 规则。空链仍会保留，以兼容 4.18 之前需要双向注册 NAT 链的内核
 - `owner` 是一个空链，用来标记这张表由本脚本创建，避免误删同名表
 - 脚本会启用 `net.ipv4.ip_forward=1`，并写入 `/etc/sysctl.d/99-nft-forward.conf`
 - 规则状态保存在 `/etc/nft-forward/rules.conf`
@@ -327,7 +340,8 @@ table ip nftfwd {
 - 目标地址是回环地址（`127.0.0.0/8`）时通常不可用；脚本会给出警告。
 - 同一个“监听端口 + 协议 + 入口网卡”组合只能有一条规则，脚本会拒绝冲突配置。
 - 端口组合的一一映射按端口从小到大排序，不支持任意乱序配对；需要任意配对时使用多条 `--rule`。
-- `--masquerade` 会隐藏原始客户端地址；不需要时不要开启。
+- SNAT 默认开启，会隐藏原始客户端地址；如果目标回程会经过本机，使用 `--no-masquerade` 保留客户端源 IP。
+- 添加规则会自动安装开机服务；如果 systemd 不可用，会提示手动处理。
 - 不要手动创建或删除 `ip nftfwd` 表；脚本依靠 `owner` 链判断归属，缺少该链时会拒绝覆盖。
 - 生产环境使用前，建议先在测试机用 `--dry-run` 检查规则。
 

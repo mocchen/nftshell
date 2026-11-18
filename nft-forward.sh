@@ -7,8 +7,9 @@
 #   - 启动时自动检测 Linux / root / nft / 内核 nftables 接口 / IPv4 转发 / systemd
 #   - 单端口、多端口、端口范围、端口组合转发
 #   - TCP / UDP / 两者
-#   - 可限制入口网卡，可选的 SNAT（masquerade）
-#   - 规则持久化，并可安装为 systemd 服务开机自动恢复
+#   - 默认 DNAT + SNAT，可按规则关闭 SNAT
+#   - 可限制入口网卡；规则持久化
+#   - 添加规则自动安装并启用 systemd 开机自启
 #   - 交互式菜单（直接运行脚本或执行 menu）
 #
 # 仅支持 IPv4。所有规则放在独立表 ip nftfwd 中，不会改动其他 nftables 表。
@@ -18,7 +19,7 @@ set -Eeuo pipefail
 umask 022
 
 readonly PROG_NAME="nft-forward"
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly TABLE_FAMILY="ip"
 readonly TABLE_NAME="nftfwd"
 readonly STATE_DIR="/etc/nft-forward"
@@ -123,9 +124,13 @@ nft-forward.sh - 基于 nftables 的 IPv4 端口转发管理脚本
   # TCP + UDP
   nft-forward.sh add --listen 25565 --dest 192.168.1.10 --dest-port 25565 --proto both
 
-  # 只接受来自 eth0 的流量，并做 SNAT（NAT 回环/回程不对称时使用）
+  # 只接受来自 eth0 的流量；SNAT 默认开启
   nft-forward.sh add --listen 8080 --dest 192.168.1.10 --dest-port 80 \
-      --iface eth0 --masquerade
+      --iface eth0
+
+  # 如目标回程会经过本机，可关闭 SNAT，保留客户端源 IP
+  nft-forward.sh add --listen 8080 --dest 192.168.1.10 --dest-port 80 \
+      --no-masquerade
 
   # 只预览生成的 nftables 规则，不修改系统
   nft-forward.sh add --listen 8080 --dest 192.168.1.10 --dest-port 80 --dry-run
@@ -137,7 +142,8 @@ add 选项：
   -r, --rule L:ADDR:P      直接指定“监听端口:目标地址:目标端口”，可重复
       --proto PROTO        tcp（默认）、udp、both
   -i, --iface NAME         仅转发从指定网卡进入的流量
-      --masquerade         对命中的 DNAT 流量做 SNAT
+      --masquerade         SNAT（默认开启）
+      --no-masquerade      关闭 SNAT
   -n, --dry-run            只打印 nftables 规则，不写入系统
 
 其他：
@@ -145,11 +151,13 @@ add 选项：
   flush --yes              清空所有规则
   apply [--dry-run]        重新应用状态文件；--dry-run 只打印规则
   check                    退出码 0 表示环境检查通过
-  install                  需要 root，建议在规则配置完成后执行
+  install                  手动安装/修复 systemd 开机服务（add 会自动安装）
   uninstall [--purge] [--yes]
                            卸载服务；--purge 同时删除状态和 sysctl 配置
 
 说明：
+  - 新规则默认同时做 DNAT 和 SNAT。
+  - 添加规则成功后会自动安装并启用 systemd 服务，实现开机自启。
   - 端口组合会按从小到大排序后一一对应。
   - 目标端口只有一个时，所有监听端口都转发到该端口。
   - 目标端口组合必须与监听端口数量一致。
@@ -875,6 +883,10 @@ acquire_lock() {
     fi
 }
 
+release_lock() {
+    exec 9>&- 2>/dev/null || true
+}
+
 # ------------------------------------------------------------------------------
 # add
 # ------------------------------------------------------------------------------
@@ -884,7 +896,7 @@ SPEC_A=()
 SPEC_D=()
 OPT_PROTO="tcp"
 OPT_IFACE=""
-OPT_MASQ=0
+OPT_MASQ=1
 OPT_DRY_RUN=0
 
 parse_rule_spec() {
@@ -912,7 +924,7 @@ parse_add_args() {
     SPEC_D=()
     OPT_PROTO="tcp"
     OPT_IFACE=""
-    OPT_MASQ=0
+    OPT_MASQ=1
     OPT_DRY_RUN=0
 
     while (($#)); do
@@ -958,6 +970,10 @@ parse_add_args() {
                 ;;
             --masquerade)
                 OPT_MASQ=1
+                shift
+                ;;
+            --no-masquerade)
+                OPT_MASQ=0
                 shift
                 ;;
             -n|--dry-run)
@@ -1039,6 +1055,38 @@ build_add_state() {
     state_write "$outfile"
 }
 
+ensure_boot_service() {
+    if ! systemd_available; then
+        warn "systemd 不可用，无法设置开机自启"
+        return 1
+    fi
+
+    install_self || return 1
+    write_service_file || return 1
+
+    if ! systemctl daemon-reload; then
+        warn "systemctl daemon-reload 失败"
+        return 1
+    fi
+    if ! systemctl enable "$SERVICE_NAME" >/dev/null; then
+        warn "启用 $SERVICE_NAME 失败"
+        return 1
+    fi
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        if ! systemctl reload "$SERVICE_NAME"; then
+            warn "重载 $SERVICE_NAME 失败"
+            return 1
+        fi
+    else
+        if ! systemctl start "$SERVICE_NAME"; then
+            warn "启动 $SERVICE_NAME 失败"
+            return 1
+        fi
+    fi
+    ok "开机自启服务已启用：$SERVICE_NAME"
+    return 0
+}
+
 cmd_add() {
     local tmp
 
@@ -1068,8 +1116,11 @@ cmd_add() {
 
     state_load "$STATE_FILE"
     ok "添加完成，当前共 ${#R_ID[@]} 条规则。"
-    if [[ ! -f "$SERVICE_FILE" ]]; then
-        warn "尚未安装开机自启服务；如需重启后保留，请执行：sudo $0 install"
+
+    # 释放锁后再启动/重载 systemd 服务，避免服务里的 apply 等待同一把锁。
+    release_lock
+    if ! ( ensure_boot_service ); then
+        warn "规则已生效，但开机自启配置失败；可执行 sudo $0 install 重试"
     fi
 }
 
@@ -1776,7 +1827,7 @@ env_summary() {
 
 MENU_PROTO="tcp"
 MENU_IFACE=""
-MENU_MASQ=0
+MENU_MASQ=1
 
 menu_clear() {
     if have clear; then
@@ -1855,7 +1906,7 @@ menu_ask_options() {
 
     MENU_PROTO="tcp"
     MENU_IFACE=""
-    MENU_MASQ=0
+    MENU_MASQ=1
 
     printf '\n协议:\n'
     printf '  1) TCP（默认）\n'
@@ -1878,12 +1929,12 @@ menu_ask_options() {
         MENU_IFACE=""
     fi
 
-    if ! read -r -p '是否启用 masquerade/SNAT? [y/N]: ' masq; then
+    if ! read -r -p '是否启用 masquerade/SNAT? [Y/n]: ' masq; then
         return 1
     fi
-    case "${masq:-n}" in
-        y|Y|yes|YES) MENU_MASQ=1 ;;
-        *) MENU_MASQ=0 ;;
+    case "${masq:-y}" in
+        n|N|no|NO) MENU_MASQ=0 ;;
+        *) MENU_MASQ=1 ;;
     esac
     return 0
 }
@@ -1935,6 +1986,8 @@ menu_add_rule() {
     fi
     if ((MENU_MASQ == 1)); then
         args+=(--masquerade)
+    else
+        args+=(--no-masquerade)
     fi
     menu_run cmd_add "${args[@]}"
     menu_pause
@@ -1978,6 +2031,8 @@ menu_add_custom() {
     fi
     if ((MENU_MASQ == 1)); then
         args+=(--masquerade)
+    else
+        args+=(--no-masquerade)
     fi
     menu_run cmd_add "${args[@]}"
     menu_pause
