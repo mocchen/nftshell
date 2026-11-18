@@ -18,6 +18,7 @@
 - 可选 SNAT/masquerade（适合 NAT 回环、目标回程不一致的场景）
 - 规则持久化到 `/etc/nft-forward/rules.conf`
 - 可安装为 `nft-forward.service`，开机自动恢复
+- 提供 `nft-forward-remote.sh` 远程启动器，可直接从 GitHub 拉取并运行
 
 ## 环境要求
 
@@ -46,6 +47,38 @@ dnf install -y nftables
 # Alpine
 apk add nftables
 ```
+
+## 远程运行
+
+如果不想先克隆仓库，可以使用远程启动器 `nft-forward-remote.sh`。它会下载当前 `mochen` 分支的 `nft-forward.sh` 到临时文件，做一次 `bash -n` 语法检查，然后执行。
+
+直接打开交互式菜单：
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward-remote.sh)"
+```
+
+> 不要使用 `curl ... | sudo bash`。管道方式会让脚本的 stdin 变成管道，交互式菜单无法正常读取键盘输入。上面的 `bash -c "$(curl ...)"` 会保留终端。
+
+非 root 用户只读查看菜单：
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward-remote.sh)"
+```
+
+执行具体命令时，建议先把启动器下载到本地，再传参数：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward-remote.sh \
+  -o /tmp/nft-forward-remote.sh
+
+sudo bash /tmp/nft-forward-remote.sh check
+sudo bash /tmp/nft-forward-remote.sh add --listen 8080 --dest 192.168.1.10 --dest-port 80
+sudo bash /tmp/nft-forward-remote.sh list
+```
+
+启动器只负责下载和启动，实际逻辑仍然是仓库里的 `nft-forward.sh`。生产环境如果希望固定版本，需要同时把 README 里的启动器 URL 和 `nft-forward-remote.sh` 内部的 `RAW_URL` 换成具体的 commit SHA。
 
 ## 交互式菜单
 
