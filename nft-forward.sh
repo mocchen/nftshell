@@ -18,7 +18,7 @@ set -Eeuo pipefail
 umask 022
 
 readonly PROG_NAME="nft-forward"
-readonly VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.0"
 readonly TABLE_FAMILY="ip"
 readonly TABLE_NAME="nftfwd"
 readonly STATE_DIR="/etc/nft-forward"
@@ -160,7 +160,7 @@ EOF
 }
 
 version() {
-    printf '%s %s\n' "$PROG_NAME" "$VERSION"
+    printf '%s %s\n' "$PROG_NAME" "$SCRIPT_VERSION"
 }
 
 # ------------------------------------------------------------------------------
@@ -176,11 +176,16 @@ detect_os() {
     OS_ID=""
     OS_LIKE=""
     if [[ -r /etc/os-release ]]; then
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        OS_NAME="${PRETTY_NAME:-${NAME:-Linux}}"
-        OS_ID="${ID:-}"
-        OS_LIKE="${ID_LIKE:-}"
+        local rel
+        rel=$(
+            # shellcheck source=/dev/null
+            . /etc/os-release
+            printf '%s\t%s\t%s' \
+                "${PRETTY_NAME:-${NAME:-Linux}}" "${ID:-}" "${ID_LIKE:-}"
+        )
+        if [[ -n "$rel" ]]; then
+            IFS=$'\t' read -r OS_NAME OS_ID OS_LIKE <<< "$rel"
+        fi
     fi
 }
 
@@ -600,7 +605,7 @@ render_one_rule() {
     if ((dcount == 1)); then
         for p in tcp udp; do
             if proto_match "$proto" "$p"; then
-                printf '    %s%s dport %s dnat to %s:%s\n' \
+                printf '        %s%s dport %s dnat to %s:%s\n' \
                     "$prefix" "$p" "$lexpr" "$addr" "${ds[0]}"
             fi
         done
@@ -625,7 +630,7 @@ render_one_rule() {
     for ((i = 0; i < n; i++)); do
         for p in tcp udp; do
             if proto_match "$proto" "$p"; then
-                printf '    %s%s dport %s dnat to %s:%s\n' \
+                printf '        %s%s dport %s dnat to %s:%s\n' \
                     "$prefix" "$p" "${lports[i]}" "$addr" "${dports[i]}"
             fi
         done
@@ -642,7 +647,7 @@ render_masq_rule() {
     dexpr=$(ports_expr)
     for p in tcp udp; do
         if proto_match "$proto" "$p"; then
-            printf '    ip daddr %s %s dport %s ct status dnat masquerade\n' \
+            printf '        ip daddr %s %s dport %s ct status dnat masquerade\n' \
                 "$addr" "$p" "$dexpr"
         fi
     done
@@ -1327,7 +1332,7 @@ cmd_status() {
     detect_os
     state_load "$STATE_FILE"
 
-    printf '%-14s %s\n' "程序版本" "$VERSION"
+    printf '%-14s %s\n' "程序版本" "$SCRIPT_VERSION"
     printf '%-14s %s\n' "系统" "$OS_NAME"
     printf '%-14s %s\n' "内核" "$(uname -sr)"
     printf '%-14s %s\n' "规则数量" "${#R_ID[@]}"
@@ -1399,7 +1404,7 @@ check_env() {
     CHECK_FAILS=0
     CHECK_WARNS=0
 
-    printf '%s %s 环境检查\n' "$PROG_NAME" "$VERSION"
+    printf '%s %s 环境检查\n' "$PROG_NAME" "$SCRIPT_VERSION"
     printf '%s\n' "------------------------------------------------------------"
 
     if [[ "$(uname -s)" == "Linux" ]]; then
@@ -1800,7 +1805,7 @@ menu_header() {
 
     printf '\n'
     printf '============================================================\n'
-    printf '  nft-forward %s  |  nftables IPv4 端口转发\n' "$VERSION"
+    printf '  nft-forward %s  |  nftables IPv4 端口转发\n' "$SCRIPT_VERSION"
     printf '  用户: %s    已保存规则: %s\n' "$user" "$count"
     printf '  环境: %s / %s / %s\n' "$ENV_OS_LABEL" "$ENV_AUTH_LABEL" "$ENV_NFT_LABEL"
     printf '        %s | IPv4转发: %s | systemd: %s\n' \
@@ -1820,7 +1825,7 @@ menu_header() {
         ' 11) 安装/更新开机服务' \
         ' 12) 卸载服务' \
         '  0) 退出'
-    printf '------------------------------------------------------------\n'
+    printf '%s\n' '------------------------------------------------------------'
 }
 
 menu_pause() {
