@@ -1,32 +1,32 @@
 # nft-forward
 
-一个基于 nftables 的 Linux IPv4 端口转发脚本，支持单端口、多端口、端口范围/组合，默认同时做 DNAT 和 SNAT，并自动配置 systemd 开机恢复。
+一个基于 nftables 的 Linux IPv4/IPv6 端口转发脚本，支持单端口、多端口、端口范围/组合，默认同时做 DNAT 和 SNAT，并自动配置 systemd 开机恢复。
 
-> 脚本只操作自己的表 `ip nftfwd`，不会执行 `flush ruleset`，也不会修改系统里其他 nftables/iptables 表。
+> 脚本只操作自己的表 `ip nftfwd` 和 `ip6 nftfwd`，不会执行 `flush ruleset`，也不会修改系统里其他 nftables/iptables 表。
 
 ## 功能
 
-- 启动时自动检测 Linux、root、nft、内核 nftables 接口、IPv4 转发、systemd
-- 检测 nft 缺失并给出常见发行版的安装命令
-- 单端口转发
+- 启动时自动检测 Linux、root、nft、内核 nftables 接口、IPv4/IPv6 转发、systemd
+- nftables 缺失时自动调用 `apt/dnf/yum/apk/pacman/zypper` 安装
+- IPv4 / IPv6 单端口转发
 - 多端口转发（`80,443`）
 - 端口范围（`8000-8010`）
 - 端口组合/一一映射（`80,443 -> 8080,8443`）
-- 多条规则指向不同目标（`--rule` 可重复）
+- 多条规则指向不同目标（`--rule` 可重复，IPv6 用 `[addr]`）
 - TCP / UDP / 两者
 - 默认 DNAT + SNAT，可按规则用 `--no-masquerade` 关闭 SNAT
-- 可限制入口网卡
+- 限制入口网卡时自动列出本机所有网卡及其绑定 IP，供菜单选择
 - 规则持久化到 `/etc/nft-forward/rules.conf`
 - 添加规则时自动安装并启用 `nft-forward.service`，开机自动恢复
 - 提供 `nft-forward-remote.sh` 远程启动器，可直接从 GitHub 拉取并运行
 
 ## 环境要求
 
-- Linux（IPv4）
-- root 权限（修改 nftables 必须）
-- nftables（`nft` 命令）
+- Linux（支持 IPv4 和 IPv6）
+- root 权限（修改 nftables 必须；自动安装也必须是 root）
+- nftables（`nft` 命令；缺失时脚本会尝试自动安装）
 - 可选：systemd（用于开机自动恢复）
-- 可选：`sysctl`、`ip`、`flock`
+- 可选：`ip`（网卡/IP 自动识别更完整；缺失时菜单会尝试安装 iproute2）、`sysctl`、`flock`
 
 脚本启动时会自动检测环境并显示摘要；如果需要完整诊断，可以执行：
 
@@ -35,7 +35,9 @@ chmod +x nft-forward.sh
 sudo ./nft-forward.sh check
 ```
 
-如果缺少 nftables，脚本会按发行版提示安装命令，例如：
+`check` 只做诊断，不会改动系统；`add` / `install` 检测到 nftables 缺失时才会自动安装。
+
+`add` / `install` 检测到 nft 缺失时，会自动调用当前发行版的包管理器安装 `nftables`。如果自动安装失败，脚本会输出对应发行版的手动安装命令，例如：
 
 ```bash
 # Debian / Ubuntu
@@ -92,7 +94,8 @@ sudo ./nft-forward.sh menu
 
 菜单提供：
 
-- 启动时自动检测环境，并在菜单顶部显示系统、root、nft、nftables、IPv4 转发和 systemd 状态
+- 启动时自动检测环境，并在菜单顶部显示系统、root、nft、nftables、IPv4/IPv6 转发和 systemd 状态
+- 添加规则时自动识别网卡及绑定 IP，选择入口网卡
 - 添加单端口、多端口/范围、端口组合规则
 - 添加自定义多目标规则
 - 查看/删除/清空规则
@@ -106,10 +109,10 @@ sudo ./nft-forward.sh menu
 
 ```text
 ============================================================
-  nft-forward 1.1.0  |  nftables IPv4 端口转发
+  nft-forward 1.2.0  |  nftables IPv4/IPv6 端口转发
   用户: root    已保存规则: 2
-  环境: Linux / root / nft v1.0.9
-        nftables 可用 | IPv4转发: 已启用 | systemd: 可用
+  环境: Linux / root / nft v1.1.3
+        nftables 可用 | IPv4转发: 已启用 | IPv6转发: 已启用 | systemd: 可用
 ============================================================
   1) 添加单端口规则
   2) 添加多端口/范围规则
@@ -149,6 +152,17 @@ sudo ./nft-forward.sh add --listen 8080 --dest 192.168.1.10 --dest-port 80
 ```bash
 sudo ./nft-forward.sh add 8080 192.168.1.10 80
 ```
+
+IPv6 目标直接把地址写在 `--dest` 中：
+
+```bash
+sudo ./nft-forward.sh add \
+  --listen 8443 \
+  --dest 2001:db8::10 \
+  --dest-port 443
+```
+
+脚本会根据目标地址自动选择 `ip` 或 `ip6` 表，并自动开启对应的 IPv4/IPv6 转发。
 
 ### 2. 多端口 / 端口范围
 
@@ -195,6 +209,14 @@ sudo ./nft-forward.sh add \
   --rule 25565:192.168.1.30:25565
 ```
 
+IPv6 目标在 `--rule` 中需要用方括号包住地址：
+
+```bash
+sudo ./nft-forward.sh add \
+  --rule '80:192.168.1.10:80' \
+  --rule '8443:[2001:db8::10]:443'
+```
+
 ### 5. TCP + UDP
 
 默认只转发 TCP。需要 UDP 时：
@@ -218,6 +240,19 @@ sudo ./nft-forward.sh add \
   --dest-port 80 \
   --iface eth0
 ```
+
+在交互式菜单中添加规则时，选择“入口网卡”会自动列出本机所有网卡及其绑定的 IPv4/IPv6 地址，例如：
+
+```text
+可用入口网卡（显示已绑定 IP）:
+   0) 不限制入口网卡
+   1) lo           127.0.0.1/8 ::1/128
+   2) eth0         45.196.216.164/26 fe80::be24:11ff:fe60:4556/64
+   m) 手动输入网卡名
+请选择 [0]:
+```
+
+选择编号即可绑定入口网卡，不再需要手动输入网卡名。
 
 默认 SNAT 适合：
 
@@ -264,9 +299,9 @@ sudo ./nft-forward.sh check         # 详细环境检查
 `list` 示例：
 
 ```text
-ID   PROTO   LISTEN                   TARGET                   IFACE     MASQ
-1    tcp     80,443,8000-8010         192.168.1.10:80          any       yes
-2    tcp+udp 25565                    192.168.1.30:25565       eth0      yes
+ID   FAMILY PROTO   LISTEN                   TARGET                     IFACE     MASQ
+1    ip     tcp     80,443,8000-8010         192.168.1.10:80            any       yes
+2    ip6    tcp     8443                      [2001:db8::10]:443          eth0      yes
 ```
 
 ## 开机自动恢复
@@ -311,7 +346,7 @@ sudo ./nft-forward.sh uninstall --purge --yes
 
 ## 工作原理
 
-脚本维护一个独立表：
+脚本按地址族维护独立表 `ip nftfwd` 和 `ip6 nftfwd`：
 
 ```nft
 table ip nftfwd {
@@ -325,24 +360,39 @@ table ip nftfwd {
         ip daddr 192.168.1.10 tcp dport 80 ct status dnat masquerade
     }
 }
+
+table ip6 nftfwd {
+    chain owner { }
+    chain prerouting {
+        type nat hook prerouting priority -100; policy accept;
+        tcp dport 8443 dnat to [2001:db8::10]:443
+    }
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        ip6 daddr 2001:db8::10 tcp dport 443 ct status dnat masquerade
+    }
+}
 ```
 
 - `prerouting` 做 DNAT，把监听端口改写到目标地址/端口
 - `postrouting` 默认对命中的 DNAT 流量做 SNAT；只有使用 `--no-masquerade` 的规则才不生成 SNAT 规则。空链仍会保留，以兼容 4.18 之前需要双向注册 NAT 链的内核
 - `owner` 是一个空链，用来标记这张表由本脚本创建，避免误删同名表
-- 脚本会启用 `net.ipv4.ip_forward=1`，并写入 `/etc/sysctl.d/99-nft-forward.conf`
+- 添加 IPv4 规则会启用 `net.ipv4.ip_forward=1`
+- 添加 IPv6 规则会启用 `net.ipv6.conf.all.forwarding=1`
+- 两者都会写入 `/etc/sysctl.d/99-nft-forward.conf`
 - 规则状态保存在 `/etc/nft-forward/rules.conf`
 
 ## 限制和注意事项
 
-- 仅支持 IPv4；目标必须是 IP 地址，不支持域名。
+- 支持 IPv4 和 IPv6；目标必须是 IP 地址，不支持域名。
 - 只处理 NAT，不负责绕过防火墙的 `FORWARD` 拒绝策略。如果系统本身有默认拒绝的 forward 防火墙规则，需要自行放行对应流量。
-- 目标地址是回环地址（`127.0.0.0/8`）时通常不可用；脚本会给出警告。
-- 同一个“监听端口 + 协议 + 入口网卡”组合只能有一条规则，脚本会拒绝冲突配置。
+- 目标地址是回环地址（`127.0.0.0/8`、`::1`）时通常不可用；脚本会给出警告。
+- 同一个“地址族 + 监听端口 + 协议 + 入口网卡”组合只能有一条规则，脚本会拒绝冲突配置。
 - 端口组合的一一映射按端口从小到大排序，不支持任意乱序配对；需要任意配对时使用多条 `--rule`。
 - SNAT 默认开启，会隐藏原始客户端地址；如果目标回程会经过本机，使用 `--no-masquerade` 保留客户端源 IP。
 - 添加规则会自动安装开机服务；如果 systemd 不可用，会提示手动处理。
-- 不要手动创建或删除 `ip nftfwd` 表；脚本依靠 `owner` 链判断归属，缺少该链时会拒绝覆盖。
+- 缺少 nftables 时，`add` / `install` 会尝试自动安装；自动安装需要 root 和可用的包管理器。
+- 不要手动创建或删除 `ip nftfwd` / `ip6 nftfwd` 表；脚本依靠 `owner` 链判断归属，缺少该链时会拒绝覆盖。
 - 生产环境使用前，建议先在测试机用 `--dry-run` 检查规则。
 
 ## 故障排查
@@ -356,9 +406,11 @@ sudo ./nft-forward.sh list
 
 # 内核中的实际表
 sudo nft list table ip nftfwd
+sudo nft list table ip6 nftfwd
 
-# IPv4 转发是否开启
+# IPv4 / IPv6 转发是否开启
 sysctl net.ipv4.ip_forward
+sysctl net.ipv6.conf.all.forwarding
 
 # systemd 日志
 journalctl -u nft-forward.service -e
