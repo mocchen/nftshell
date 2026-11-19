@@ -18,7 +18,6 @@
 - 限制入口网卡时自动列出本机所有网卡及其绑定 IP，供菜单选择
 - 规则持久化到 `/etc/nft-forward/rules.conf`
 - 添加规则时自动安装并启用 `nft-forward.service`，开机自动恢复
-- 提供 `nft-forward-remote.sh` 远程启动器，可直接从 GitHub 拉取并运行
 
 ## 环境要求
 
@@ -52,35 +51,43 @@ apk add nftables
 
 ## 远程运行
 
-如果不想先克隆仓库，可以使用远程启动器 `nft-forward-remote.sh`。它会下载当前 `mochen` 分支的 `nft-forward.sh` 到临时文件，做一次 `bash -n` 语法检查，然后执行。
-
-直接打开交互式菜单：
+不需要先克隆仓库，也不需要额外启动器，直接执行：
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward-remote.sh)"
+bash <(wget -qO- https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward.sh)
 ```
 
-> 不要使用 `curl ... | sudo bash`。管道方式会让脚本的 stdin 变成管道，交互式菜单无法正常读取键盘输入。上面的 `bash -c "$(curl ...)"` 会保留终端。
-
-非 root 用户只读查看菜单：
+如果系统使用 `curl`：
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward-remote.sh)"
+bash <(curl -fsSL https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward.sh)
 ```
 
-执行具体命令时，建议先把启动器下载到本地，再传参数：
+这种方式会保留终端 stdin，因此交互式菜单可以正常使用。请先确保当前是 root shell：
 
 ```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward-remote.sh \
-  -o /tmp/nft-forward-remote.sh
-
-sudo bash /tmp/nft-forward-remote.sh check
-sudo bash /tmp/nft-forward-remote.sh add --listen 8080 --dest 192.168.1.10 --dest-port 80
-sudo bash /tmp/nft-forward-remote.sh list
+sudo -i
+bash <(wget -qO- https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward.sh)
 ```
 
-启动器只负责下载和启动，实际逻辑仍然是仓库里的 `nft-forward.sh`。生产环境如果希望固定版本，需要同时把 README 里的启动器 URL 和 `nft-forward-remote.sh` 内部的 `RAW_URL` 换成具体的 commit SHA。
+也可以通过 `sudo bash -c` 执行（进程替换由当前 shell 处理）：
+
+```bash
+sudo bash -c "$(wget -qO- https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward.sh)"
+```
+
+直接带参数执行：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward.sh) \
+  add --listen 8080 --dest 192.168.1.10 --dest-port 80
+```
+
+> 不要使用 `wget ... | sudo bash`。管道方式会让脚本的 stdin 变成管道，交互式菜单无法读取键盘输入。
+>
+> 如果使用进程替换方式并添加规则，脚本会为 systemd 服务重新下载一份自身副本到 `/usr/local/sbin/nft-forward`，以保证开机自启。
+
+生产环境如果希望固定版本，把 URL 中的 `mochen` 换成具体的 commit SHA；同时脚本内的 `SELF_RAW_URL` 也应指向同一个 commit，否则进程替换方式安装开机服务时仍会下载分支最新版。
 
 ## 交互式菜单
 
@@ -109,7 +116,7 @@ sudo ./nft-forward.sh menu
 
 ```text
 ============================================================
-  nft-forward 1.2.0  |  nftables IPv4/IPv6 端口转发
+  nft-forward 1.2.1  |  nftables IPv4/IPv6 端口转发
   用户: root    已保存规则: 2
   环境: Linux / root / nft v1.1.3
         nftables 可用 | IPv4转发: 已启用 | IPv6转发: 已启用 | systemd: 可用

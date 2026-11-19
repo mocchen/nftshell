@@ -21,7 +21,7 @@ set -Eeuo pipefail
 umask 022
 
 readonly PROG_NAME="nft-forward"
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.2.1"
 readonly TABLE_NAME="nftfwd"
 readonly TABLE_FAMILIES=("ip" "ip6")
 readonly STATE_DIR="/etc/nft-forward"
@@ -32,6 +32,7 @@ readonly SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}"
 readonly INSTALL_PATH="/usr/local/sbin/nft-forward"
 readonly LOCK_FILE="/run/nft-forward.lock"
 readonly MAX_PAIR_PORTS=4096
+readonly SELF_RAW_URL="https://raw.githubusercontent.com/mocchen/nftshell/refs/heads/mochen/nft-forward.sh"
 AUTO_INSTALL_NFT="${NFTF_AUTO_INSTALL:-1}"
 
 CLEANUP_FILES=()
@@ -1911,25 +1912,39 @@ EOF
 install_self() {
     local src dst src_path newpath
     src_path="${BASH_SOURCE[0]:-$0}"
-    if [[ -z "$src_path" || ! -f "$src_path" ]]; then
-        die "无法确定当前脚本路径，请直接执行脚本文件后再安装"
-    fi
-    src=$(readlink -f "$src_path" 2>/dev/null || printf '%s' "$src_path")
-    dst=$(readlink -f "$INSTALL_PATH" 2>/dev/null || printf '%s' "$INSTALL_PATH")
-
-    if [[ "$src" == "$dst" ]]; then
-        ok "脚本已位于 $INSTALL_PATH"
-        return 0
-    fi
     mkdir -p "$(dirname "$INSTALL_PATH")" || die "无法创建 $INSTALL_PATH 所在目录"
     newpath="${INSTALL_PATH}.new.$$"
     CLEANUP_FILES+=("$newpath")
-    if have install; then
-        install -m 0755 "$src" "$newpath" || die "复制脚本到 $INSTALL_PATH 失败"
+
+    if [[ -n "$src_path" && -f "$src_path" ]]; then
+        src=$(readlink -f "$src_path" 2>/dev/null || printf '%s' "$src_path")
+        dst=$(readlink -f "$INSTALL_PATH" 2>/dev/null || printf '%s' "$INSTALL_PATH")
+        if [[ "$src" == "$dst" ]]; then
+            ok "脚本已位于 $INSTALL_PATH"
+            return 0
+        fi
+        if have install; then
+            install -m 0755 "$src" "$newpath" || die "复制脚本到 $INSTALL_PATH 失败"
+        else
+            cp -f "$src" "$newpath" || die "复制脚本到 $INSTALL_PATH 失败"
+            chmod 0755 "$newpath" || die "设置脚本执行权限失败"
+        fi
     else
-        cp -f "$src" "$newpath" || die "复制脚本到 $INSTALL_PATH 失败"
+        warn "当前脚本不是普通文件（进程替换/管道），从 GitHub 下载副本用于开机服务..."
+        if have curl; then
+            curl -fsSL --retry 3 "$SELF_RAW_URL" -o "$newpath" ||
+                die "下载脚本失败：$SELF_RAW_URL"
+        elif have wget; then
+            wget -qO "$newpath" "$SELF_RAW_URL" ||
+                die "下载脚本失败：$SELF_RAW_URL"
+        else
+            die "缺少 curl/wget，无法为开机服务准备脚本副本"
+        fi
+        [[ -s "$newpath" ]] || die "下载的脚本为空"
+        bash -n "$newpath" || die "下载的脚本未通过语法检查"
         chmod 0755 "$newpath" || die "设置脚本执行权限失败"
     fi
+
     mv -f "$newpath" "$INSTALL_PATH" || die "安装脚本到 $INSTALL_PATH 失败"
     ok "已安装脚本到 $INSTALL_PATH"
 }
