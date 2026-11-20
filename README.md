@@ -13,9 +13,9 @@
 - 端口范围（`8000-8010`）
 - 端口组合/一一映射（`80,443 -> 8080,8443`）
 - 多条规则指向不同目标（`--rule` 可重复，IPv6 用 `[addr]`）
-- TCP / UDP / 两者
+- TCP / UDP，默认两者同时转发
 - 默认 DNAT + SNAT，可按规则用 `--no-masquerade` 关闭 SNAT
-- 限制入口网卡时自动列出本机所有网卡及其绑定 IP，供菜单选择
+- 默认所有入口网卡；限制网卡时自动列出本机所有网卡及其绑定 IP，供菜单选择
 - 规则持久化到 `/etc/nft-forward/rules.conf`
 - 添加规则时自动安装并启用 `nft-forward.service`，开机自动恢复
 
@@ -116,7 +116,7 @@ sudo ./nft-forward.sh menu
 
 ```text
 ============================================================
-  nft-forward 1.2.1  |  nftables IPv4/IPv6 端口转发
+  nft-forward 1.2.2  |  nftables IPv4/IPv6 端口转发
   用户: root    已保存规则: 2
   环境: Linux / root / nft v1.1.3
         nftables 可用 | IPv4转发: 已启用 | IPv6转发: 已启用 | systemd: 可用
@@ -224,21 +224,32 @@ sudo ./nft-forward.sh add \
   --rule '8443:[2001:db8::10]:443'
 ```
 
-### 5. TCP + UDP
+### 5. TCP + UDP（默认）
 
-默认只转发 TCP。需要 UDP 时：
+默认同时转发 TCP 和 UDP，不需要额外加 `--proto`：
+
+```bash
+sudo ./nft-forward.sh add \
+  --listen 25565 \
+  --dest 192.168.1.10 \
+  --dest-port 25565
+```
+
+只转发 TCP：
 
 ```bash
 sudo ./nft-forward.sh add \
   --listen 25565 \
   --dest 192.168.1.10 \
   --dest-port 25565 \
-  --proto both
+  --proto tcp
 ```
+
+只转发 UDP 时使用 `--proto udp`。
 
 ### 6. 限制入口网卡 + 默认 SNAT
 
-只接受从 `eth0` 进入的连接。新规则默认已经开启 SNAT，不需要额外加 `--masquerade`：
+默认不限制入口网卡，即所有网卡。只接受从 `eth0` 进入的连接时才需要加 `--iface`。新规则默认已经开启 SNAT，不需要额外加 `--masquerade`：
 
 ```bash
 sudo ./nft-forward.sh add \
@@ -252,7 +263,7 @@ sudo ./nft-forward.sh add \
 
 ```text
 可用入口网卡（显示已绑定 IP）:
-   0) 不限制入口网卡
+   0) 所有网卡（默认）
    1) lo           127.0.0.1/8 ::1/128
    2) eth0         45.196.216.164/26 fe80::be24:11ff:fe60:4556/64
    m) 手动输入网卡名

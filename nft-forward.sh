@@ -7,9 +7,9 @@
 #   - 启动时自动检测 Linux / root / nft / 内核 nftables 接口 / IPv4/IPv6 转发 / systemd
 #   - nftables 缺失时自动调用包管理器安装
 #   - 单端口、多端口、端口范围、端口组合转发
-#   - TCP / UDP / 两者
+#   - TCP / UDP，默认两者同时转发
+#   - 默认所有入口网卡；可限制入口网卡，菜单自动列出网卡及绑定 IP
 #   - 默认 DNAT + SNAT，可按规则关闭 SNAT
-#   - 可限制入口网卡；菜单自动列出网卡及绑定 IP
 #   - 规则持久化到 /etc/nft-forward/rules.conf
 #   - 添加规则自动安装并启用 systemd 开机自启
 #   - 交互式菜单（直接运行脚本或执行 menu）
@@ -21,7 +21,7 @@ set -Eeuo pipefail
 umask 022
 
 readonly PROG_NAME="nft-forward"
-readonly SCRIPT_VERSION="1.2.1"
+readonly SCRIPT_VERSION="1.2.2"
 readonly TABLE_NAME="nftfwd"
 readonly TABLE_FAMILIES=("ip" "ip6")
 readonly STATE_DIR="/etc/nft-forward"
@@ -148,8 +148,8 @@ add 选项：
   -d, --dest ADDR          目标 IPv4 或 IPv6 地址
   -p, --dest-port PORTS    目标端口：单个端口，或与监听端口数量相同的组合
   -r, --rule L:ADDR:P      直接指定“监听端口:目标地址:目标端口”，可重复；IPv6 地址写作 [addr]
-      --proto PROTO        tcp（默认）、udp、both
-  -i, --iface NAME         仅转发从指定网卡进入的流量
+      --proto PROTO        tcp、udp、both（默认）
+  -i, --iface NAME         仅转发从指定网卡进入的流量（默认所有网卡）
       --masquerade         SNAT（默认开启）
       --no-masquerade      关闭 SNAT
   -n, --dry-run            只打印 nftables 规则，不写入系统
@@ -169,7 +169,7 @@ add 选项：
   - 端口组合会按从小到大排序后一一对应。
   - 目标端口只有一个时，所有监听端口都转发到该端口。
   - 目标端口组合必须与监听端口数量一致。
-  - 规则默认只转发 TCP；需要 UDP 时显式加 --proto udp 或 --proto both。
+  - 规则默认同时转发 TCP 和 UDP；只转发 TCP 时加 --proto tcp。
   - 脚本只创建/删除自己的表 ip/ip6 nftfwd，不会 flush 系统其他防火墙规则。
   - 支持 IPv4 和 IPv6；目标地址必须是 IP，不支持域名。
 EOF
@@ -1133,7 +1133,7 @@ SPEC_L=()
 SPEC_A=()
 SPEC_D=()
 SPEC_F=()
-OPT_PROTO="tcp"
+OPT_PROTO="both"
 OPT_IFACE=""
 OPT_MASQ=1
 OPT_DRY_RUN=0
@@ -1169,7 +1169,7 @@ parse_add_args() {
     SPEC_A=()
     SPEC_D=()
     SPEC_F=()
-    OPT_PROTO="tcp"
+    OPT_PROTO="both"
     OPT_IFACE=""
     OPT_MASQ=1
     OPT_DRY_RUN=0
@@ -2158,7 +2158,7 @@ env_summary() {
 # 交互式菜单
 # ------------------------------------------------------------------------------
 
-MENU_PROTO="tcp"
+MENU_PROTO="both"
 MENU_IFACE=""
 MENU_MASQ=1
 IFACE_LIST=()
@@ -2225,7 +2225,7 @@ menu_select_iface() {
     fi
 
     printf '\n可用入口网卡（显示已绑定 IP）:\n'
-    printf '   0) 不限制入口网卡\n'
+    printf '   0) 所有网卡（默认）\n'
     idx=1
     for name in "${IFACE_LIST[@]}"; do
         addrs="${IFACE_ADDR_MAP[$name]:-}"
@@ -2344,18 +2344,18 @@ menu_require_root() {
 menu_ask_options() {
     local choice masq
 
-    MENU_PROTO="tcp"
+    MENU_PROTO="both"
     MENU_IFACE=""
     MENU_MASQ=1
 
     printf '\n协议:\n'
-    printf '  1) TCP（默认）\n'
+    printf '  1) TCP\n'
     printf '  2) UDP\n'
-    printf '  3) TCP + UDP\n'
-    if ! read -r -p '请选择 [1]: ' choice; then
+    printf '  3) TCP + UDP（默认）\n'
+    if ! read -r -p '请选择 [3]: ' choice; then
         return 1
     fi
-    case "${choice:-1}" in
+    case "${choice:-3}" in
         1) MENU_PROTO="tcp" ;;
         2) MENU_PROTO="udp" ;;
         3) MENU_PROTO="both" ;;
